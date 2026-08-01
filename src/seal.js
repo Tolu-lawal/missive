@@ -1,15 +1,14 @@
 import { waitForWallet, connectWallet, disconnectWallet, switchToShelbyNet, getCurrentNetwork } from './lib/wallet.js';
-import { generateTimeKey, encryptMessage, deriveRecipientSecret, bytesToHex } from './lib/crypto.js';
+import { generateTimeKey, encryptMessage, boxToRecipient, bytesToHex } from './lib/crypto.js';
 import { uploadCapsuleToShelby } from './lib/shelby.js';
-import { sealCapsuleOnChain, getCapsuleIdFromTx, CONTRACT_ADDRESS } from './lib/contract.js';
+import { sealCapsuleOnChain, getCapsuleIdFromTx, getPubkey, CONTRACT_ADDRESS } from './lib/contract.js';
 
 const $ = (id) => document.getElementById(id);
 
 let authorWallet = null;
 let authorAddress = null;
-let recipientWallet = null;
-let recipientAddress = null;
-let recipientSecret = null;
+let recipientAddress = null;   // set only once a valid registered key is found
+let recipientPublicKey = null; // Uint8Array (32 bytes) or null
 let capsuleSeed = null; // random hex, generated once, embedded in the blob name
 
 function ensureCapsuleSeed() {
@@ -57,7 +56,8 @@ $('walletBtn').addEventListener('click', async () => {
     const onShelbyNet = net && (
       String(net.chainId) === '114' ||
       String(net.chainId) === '0x72' ||
-      String(net.name || '').toLowerCase() === 'shelbynet'
+      String(net.name || '').toLowerCase() === 'shelbynet' ||
+      String(net.url || '').includes('shelbynet.shelby.xyz')
     );
     authorWallet = wallet;
 
@@ -87,7 +87,7 @@ $('walletBtn').addEventListener('click', async () => {
 $('disconnectBtn').addEventListener('click', async () => {
   await disconnectWallet(authorWallet);
   authorWallet = null; authorAddress = null;
-  recipientWallet = null; recipientAddress = null; recipientSecret = null;
+  recipientAddress = null; recipientPublicKey = null;
 
   $('walletDot').classList.remove('connected');
   $('walletLabel').textContent = 'Connect Petra Wallet to Continue';
@@ -98,7 +98,7 @@ $('disconnectBtn').addEventListener('click', async () => {
 
   $('message').disabled = true;
   $('unlockDate').disabled = true;
-    document.querySelectorAll('.quick-pick-btn').forEach(b => b.disabled = true);
+  document.querySelectorAll('.quick-pick-btn').forEach(b => b.disabled = true);
   $('recipient').disabled = true;
   $('sealBtn').disabled = true;
   $('recipient').value = '';
@@ -106,58 +106,54 @@ $('disconnectBtn').addEventListener('click', async () => {
   clearError();
 });
 
-// ── Recipient field ──
-$('recipient').addEventListener('input', onRecipientChange);
-function onRecipientChange() {
+// ── Recipient field: async on-chain pubkey lookup, debounced ──
+let recipientLookupTimer = null;
+let recipientLookupToken = 0;
+
+$('recipient').addEventListener('input', () => {
+  clearTimeout(recipientLookupTimer);
+  recipientLookupTimer = setTimeout(onRecipientChange, 400);
+});
+
+async function onRecipientChange() {
   const val = $('recipient').value.trim();
   const section = $('recipientAuthSection');
-  if (val) {
-    section.style.display = 'block';
-  } else {
+  const statusText = $('recipientStatusText');
+
+  recipientAddress = null;
+  recipientPublicKey = null;
+
+  if (!val) {
     section.style.display = 'none';
-    recipientSecret = null; recipientAddress = null; recipientWallet = null;
-    $('recipientWalletDot').classList.remove('connected');
-    $('recipientWalletLabel').textContent = 'Recipient: Connect Wallet to Authorize';
-    $('recipientWalletAddress').textContent = '';
-    $('recipientWalletBtn').classList.remove('connected');
-    $('recipientWalletBtnRight').textContent = 'AUTHORIZE →';
+    return;
+  }
+
+  if (!/^0x[0-9a-fA-F]{4,64}$/.test(val)) {
+    section.style.display = 'block';
+    statusText.textContent = 'Enter a valid wallet address (starting with 0x).';
+    return;
+  }
+
+  section.style.display = 'block';
+  statusText.textContent = 'Checking if this address has a registered key...';
+
+  const myToken = ++recipientLookupToken;
+  try {
+    const pubkey = await getPubkey(val);
+    if (myToken !== recipientLookupToken) return; // stale — user kept typing
+
+    if (pubkey) {
+      recipientAddress = val;
+      recipientPublicKey = pubkey;
+      statusText.textContent = '✓ This address has a registered key. The message will be cryptographically bound to it — only they can ever decrypt it.';
+    } else {
+      statusText.textContent = '⚠ This address has not registered a key yet. Ask them to visit /register.html first, or leave this field blank to seal without recipient binding.';
+    }
+  } catch (err) {
+    if (myToken !== recipientLookupToken) return;
+    statusText.textContent = 'Could not check registration: ' + (err.message || String(err));
   }
 }
-
-$('recipientWalletBtn').addEventListener('click', async () => {
-  const typed = $('recipient').value.trim();
-  if (!typed) { showError('Enter the recipient wallet address first.'); return; }
-
-  const right = $('recipientWalletBtnRight');
-  right.textContent = 'Detecting...';
-
-  const wallet = await waitForWallet(3000);
-  if (!wallet) { right.textContent = 'AUTHORIZE →'; showError('Petra wallet not detected.'); return; }
-
-  try {
-    const addr = await connectWallet(wallet);
-    if (addr.toLowerCase() !== typed.toLowerCase()) {
-      right.textContent = 'AUTHORIZE →';
-      showError('Connected wallet (' + addr.slice(0,10) + '...) does not match the recipient address you entered. Have the recipient connect their own wallet here.');
-      return;
-    }
-
-    ensureCapsuleSeed();
-    recipientSecret = await deriveRecipientSecret(wallet, capsuleSeed);
-    recipientAddress = addr;
-    recipientWallet = wallet;
-
-    $('recipientWalletDot').classList.add('connected');
-    $('recipientWalletLabel').textContent = 'Recipient Authorized ✓';
-    $('recipientWalletAddress').textContent = addr.slice(0,10) + '...' + addr.slice(-6);
-    $('recipientWalletBtn').classList.add('connected');
-    right.textContent = '✓ AUTHORIZED';
-    clearError();
-  } catch (err) {
-    right.textContent = 'AUTHORIZE →';
-    showError('Recipient authorization failed: ' + (err.message || String(err)));
-  }
-});
 
 // ── Char count + date defaults ──
 $('message').addEventListener('input', () => {
@@ -197,7 +193,10 @@ $('sealBtn').addEventListener('click', async () => {
   if (!unlockDateStr) { showError('Please set an unlock date.'); return; }
   const unlockTimeSeconds = Math.floor(new Date(unlockDateStr).getTime() / 1000);
   if (unlockTimeSeconds <= Math.floor(Date.now() / 1000)) { showError('Unlock date must be in the future.'); return; }
-  if (recipientTyped && !recipientSecret) { showError('Have the recipient connect & authorize their wallet first.'); return; }
+  if (recipientTyped && !recipientPublicKey) {
+    showError('This recipient has not registered a key yet (or the lookup has not finished). Ask them to visit /register.html, or leave the recipient field blank.');
+    return;
+  }
 
   const btn = $('sealBtn');
   btn.disabled = true;
@@ -209,10 +208,22 @@ $('sealBtn').addEventListener('click', async () => {
     const blobName = `capsules/${capsuleSeed}.bin`;
     const timeKey = generateTimeKey();
 
-    // Step 1: encrypt + prep commitments happen inside uploadCapsuleToShelby,
-    // but we encrypt first since it doesn't need network/wallet.
-    const ciphertextB64 = await encryptMessage(message, timeKey, recipientSecret);
-    const dataBytes = new TextEncoder().encode(ciphertextB64);
+    // Layer 1: AES-256-GCM encrypt with the time_key (chain-enforced release).
+    const ciphertextB64 = await encryptMessage(message, timeKey);
+
+    // Layer 2 (optional): if a recipient with a registered key was found,
+    // box the layer-1 ciphertext to their public key — asymmetric, so they
+    // never needed to be online for this step.
+    let dataBytes;
+    let recipientBound = false;
+    if (recipientPublicKey) {
+      const layer1Bytes = new TextEncoder().encode(ciphertextB64);
+      const boxedJson = boxToRecipient(layer1Bytes, recipientPublicKey);
+      dataBytes = new TextEncoder().encode(boxedJson);
+      recipientBound = true;
+    } else {
+      dataBytes = new TextEncoder().encode(ciphertextB64);
+    }
 
     const expirationMicros = (unlockTimeSeconds + 365 * 24 * 3600) * 1_000_000;
 
@@ -238,7 +249,7 @@ $('sealBtn').addEventListener('click', async () => {
       recipientAddress: recipientAddress || '0x0',
       blobId: uploadResult.merkleRoot,
       blobName,
-      recipientBound: !!recipientSecret,
+      recipientBound,
     });
     setStep('step4', 'done');
 
