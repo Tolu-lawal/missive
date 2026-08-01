@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Missive — Register Your Key</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<div style="background:rgba(201,168,76,0.1);border-bottom:1px solid rgba(201,168,76,0.3);padding:10px 24px;text-align:center;font-family:'Courier Prime',monospace;font-size:0.62rem;color:#c9a84c;letter-spacing:2px;">
+  ⚠ &nbsp; SHELBYNET IS IN TESTNET — NETWORK WIPES WEEKLY. A NETWORK WIPE ERASES YOUR REGISTERED KEY TOO.
+</div>
+
+<div class="container">
+
+  <div class="header">
+    <svg class="seal-svg" viewBox="0 0 64 64" fill="none">
+      <circle cx="32" cy="32" r="28" stroke="#c9a84c" stroke-width="1" opacity="0.4"/>
+      <circle cx="32" cy="32" r="22" stroke="#c9a84c" stroke-width="1" opacity="0.6"/>
+      <path d="M32 14L35.5 24.5L46.5 24.5L37.5 31L41 41.5L32 35L23 41.5L26.5 31L17.5 24.5L28.5 24.5Z" fill="#c9a84c" opacity="0.8"/>
+    </svg>
+    <div class="eyebrow">Shelby Protocol · Missive</div>
+    <h1 class="title">Register Your <em>Key</em></h1>
+    <p class="subtitle">A one-time setup so others can seal a message to you — without you needing to be online when they do it.</p>
+  </div>
+
+  <div class="divider"><div class="divider-line"></div><div class="divider-diamond">◆</div><div class="divider-line"></div></div>
+
+  <div class="wallet-section">
+    <button class="wallet-btn" id="walletBtn">
+      <div class="wallet-left">
+        <div class="wallet-dot" id="walletDot"></div>
+        <div>
+          <div class="wallet-label" id="walletLabel">Connect Petra Wallet to Continue</div>
+          <div class="wallet-address" id="walletAddress"></div>
+        </div>
+      </div>
+      <span style="font-size:0.6rem;color:var(--muted);letter-spacing:2px" id="walletBtnRight">CONNECT →</span>
+    </button>
+    <button class="disconnect-btn" id="disconnectBtn" style="display:none">Disconnect Wallet</button>
+  </div>
+
+  <div class="form">
+
+    <div class="info-box">
+      <p><strong>How it works:</strong> Signing below deterministically derives an encryption keypair from your wallet — the same signature, every time, without ever exposing your wallet's private key. Only the <strong>public</strong> half gets published on-chain. Anyone can then look it up and seal a message addressed to you, any time, without you needing to be present. To open it later, you just reconnect here and sign the same message again — your key regenerates identically.</p>
+    </div>
+
+    <div class="status-box" id="statusBox" style="display:none;border:1px solid rgba(201,168,76,0.3);border-radius:4px;padding:16px;margin-bottom:20px;font-family:'Courier Prime',monospace;font-size:0.7rem;color:var(--muted);line-height:1.8">
+      <span id="statusText">Checking registration status...</span>
+    </div>
+
+    <div class="error-msg" id="errorMsg"></div>
+
+    <div class="result" id="result">
+      <div class="result-title">✦ Key Registered</div>
+      <div style="font-size:0.68rem;color:var(--muted);line-height:1.7">Anyone can now seal a message to your wallet address on Missive.</div>
+      <div class="result-meta" id="resultMeta"></div>
+    </div>
+
+    <button class="seal-btn" id="registerBtn" disabled><span>◆ &nbsp; Register My Key</span></button>
+  </div>
+
+  <div class="footer">
+    Built on <a href="https://shelby.xyz" target="_blank">Shelby Protocol</a> · ShelbyNet · Aptos
+    &nbsp;·&nbsp; <a href="./index.html">Seal a Message →</a>
+    &nbsp;·&nbsp; <a href="./open.html">Open a Capsule →</a>
+  </div>
+</div>
+
+<script type="module" src="./register.js"></script>
+</body>
+</html>
