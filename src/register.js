@@ -52,11 +52,12 @@ $('walletBtn').addEventListener('click', async () => {
     authorAddress = await connectWallet(wallet);
     await switchToShelbyNet(wallet); // best-effort; Petra's changeNetwork is unreliable, don't trust its result
     const net = await getCurrentNetwork(wallet);
-  console.log('NET OBJECT:', JSON.stringify(net));
-  const onShelbyNet = net && (
+  const net = await getCurrentNetwork(wallet);
+    const onShelbyNet = net && (
       String(net.chainId) === '114' ||
       String(net.chainId) === '0x72' ||
-      String(net.name || '').toLowerCase() === 'shelbynet'
+      String(net.name || '').toLowerCase() === 'shelbynet' ||
+      String(net.url || '').includes('shelbynet.shelby.xyz')
     );
     authorWallet = wallet;
 
