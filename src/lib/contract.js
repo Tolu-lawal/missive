@@ -168,3 +168,53 @@ export async function getCapsuleCount() {
   const [count] = await callView(fn('get_capsule_count'), [], [CONTRACT_ADDRESS]);
   return Number(count);
 }
+/**
+ * Register (or update) the caller's own X25519 encryption public key
+ * on-chain, via signAndSubmitTransaction. This is the one-time setup step
+ * a recipient does — independently, whenever they want, no sender needed.
+ *
+ * @param publicKeyBytes — 32-byte X25519 public key (from deriveX25519Keypair).
+ */
+export async function registerPubkey(wallet, publicKeyBytes) {
+  assertDeployed();
+  const txHash = await signAndSubmitTransaction(
+    wallet,
+    fn('register_pubkey'),
+    [Array.from(publicKeyBytes), CONTRACT_ADDRESS]
+  );
+  return txHash;
+}
+
+/**
+ * Look up a wallet's registered public key.
+ * @returns Uint8Array (32 bytes) if found, or null if that address hasn't
+ *          registered one yet (instead of throwing — callers usually want
+ *          to check this before deciding whether to allow recipient-bound sealing).
+ */
+export async function getPubkey(userAddress) {
+  assertDeployed();
+  try {
+    const [pubkeyRaw] = await callView(fn('get_pubkey'), [], [CONTRACT_ADDRESS, userAddress]);
+    return typeof pubkeyRaw === 'string' ? hexToBytesLocal(pubkeyRaw) : new Uint8Array(pubkeyRaw);
+  } catch (err) {
+    const msg = String(err.message || err);
+    if (msg.includes('E_PUBKEY_NOT_FOUND') || /\b6\b.*abort/.test(msg)) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+/** Quick check: has this wallet registered a public key yet? */
+export async function hasPubkey(userAddress) {
+  assertDeployed();
+  const [result] = await callView(fn('has_pubkey'), [], [CONTRACT_ADDRESS, userAddress]);
+  return !!result;
+}
+
+function hexToBytesLocal(hex) {
+  const clean = String(hex).replace(/^0x/, '');
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
+  return out;
+}

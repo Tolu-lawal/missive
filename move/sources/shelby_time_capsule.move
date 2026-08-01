@@ -7,9 +7,10 @@
 /// Security model:
 /// - time_key is locked in the contract until unlock_time (chain-enforced)
 /// - Without time_key, the AES-256 ciphertext cannot be decrypted
-/// - For recipient-bound capsules, the recipient's deterministic wallet
-///   signature is ALSO required — so even after time_key is public,
-///   only the recipient can decrypt
+/// - For recipient-bound capsules, the message is additionally encrypted to
+///   the recipient's registered public key (see PubkeyRegistry below), so
+///   only the holder of the matching private key can ever decrypt it —
+///   independent of when they registered that key.
 module shelby_capsule::time_capsule {
     use aptos_framework::timestamp;
     use std::signer;
@@ -22,13 +23,14 @@ module shelby_capsule::time_capsule {
     const E_ALREADY_INIT:      u64 = 3;
     const E_UNLOCK_IN_PAST:    u64 = 4;
     const E_STORE_NOT_FOUND:   u64 = 5;
+    const E_PUBKEY_NOT_FOUND:  u64 = 6;
 
     // ── Structs ──────────────────────────────────────────────────────────────
 
     /// A single sealed time capsule stored on-chain.
     struct Capsule has store, drop, copy {
-        /// Random key fragment. Combined with the recipient's deterministic
-        /// signature (if set) to form the AES-256 decryption key.
+        /// Random key fragment. Combined with the recipient's registered
+        /// public key (if set) to form the AES-256 decryption key material.
         /// Only released after unlock_time.
         time_key: vector<u8>,
 
@@ -50,7 +52,8 @@ module shelby_capsule::time_capsule {
         /// When the capsule was created (seconds).
         created_at: u64,
 
-        /// Whether the capsule is recipient-bound (true = needs wallet sig).
+        /// Whether the capsule is recipient-bound (true = needs recipient's
+        /// registered public key to fully decrypt).
         recipient_bound: bool,
     }
 
@@ -58,6 +61,15 @@ module shelby_capsule::time_capsule {
     struct CapsuleStore has key {
         capsules: Table<u64, Capsule>,
         capsule_count: u64,
+    }
+
+    /// Public-key registry: lets any wallet publish an encryption public key
+    /// ahead of time, so senders can look it up and encrypt to it without
+    /// the recipient needing to be present. Recipients can overwrite their
+    /// own entry any time (e.g. to rotate keys); each address controls only
+    /// its own slot.
+    struct PubkeyRegistry has key {
+        pubkeys: Table<address, vector<u8>>,
     }
 
     // ── Events ───────────────────────────────────────────────────────────────
@@ -78,6 +90,11 @@ module shelby_capsule::time_capsule {
         opened_at: u64,
     }
 
+    #[event]
+    struct PubkeyRegistered has drop, store {
+        owner: address,
+    }
+
     // ── Initialization ───────────────────────────────────────────────────────
 
     /// Called automatically when the module is published.
@@ -86,6 +103,9 @@ module shelby_capsule::time_capsule {
             capsules: table::new(),
             capsule_count: 0,
         });
+        move_to(deployer, PubkeyRegistry {
+            pubkeys: table::new(),
+        });
     }
 
     // ── Entry functions ──────────────────────────────────────────────────────
@@ -93,15 +113,15 @@ module shelby_capsule::time_capsule {
     /// Seal a time capsule on-chain.
     ///
     /// @param time_key       — Random key fragment (32 bytes). Combined with
-    ///                         the recipient's deterministic signature to form
-    ///                         the final AES-256 key.
+    ///                         the recipient's registered public key to form
+    ///                         the final AES-256 key material.
     /// @param unlock_time    — Unix timestamp (seconds) after which the
     ///                         time_key will be released.
     /// @param recipient      — @0x0 for public, or a specific wallet address.
     /// @param blob_id        — ShelbyNet blob ID (hex bytes).
     /// @param blob_name      — ShelbyNet blob name (UTF-8 bytes).
     /// @param recipient_bound — true if the decryption key also depends on
-    ///                          the recipient's wallet signature.
+    ///                          the recipient's registered public key.
     /// @param registry_addr  — Address where CapsuleStore lives (deployer).
     public entry fun seal_capsule(
         author: &signer,
@@ -140,6 +160,32 @@ module shelby_capsule::time_capsule {
             unlock_time,
             blob_id: table::borrow(&store.capsules, id).blob_id,
         });
+    }
+
+    /// Register (or overwrite) the caller's own encryption public key.
+    /// Anyone can call this at any time, independent of any capsule —
+    /// this is the "one-time setup" step that lets others seal capsules
+    /// to this wallet later without the wallet needing to be present.
+    ///
+    /// @param pubkey        — 32-byte X25519 public key, deterministically
+    ///                        derived client-side from a wallet signature.
+    /// @param registry_addr — Address where PubkeyRegistry lives (deployer).
+    public entry fun register_pubkey(
+        user: &signer,
+        pubkey: vector<u8>,
+        registry_addr: address,
+    ) acquires PubkeyRegistry {
+        assert!(exists<PubkeyRegistry>(registry_addr), E_STORE_NOT_FOUND);
+        let reg = borrow_global_mut<PubkeyRegistry>(registry_addr);
+        let owner = signer::address_of(user);
+
+        if (table::contains(&reg.pubkeys, owner)) {
+            table::upsert(&mut reg.pubkeys, owner, pubkey);
+        } else {
+            table::add(&mut reg.pubkeys, owner, pubkey);
+        };
+
+        event::emit(PubkeyRegistered { owner });
     }
 
     // ── View functions ────────────────────────────────────────────────────────
@@ -201,6 +247,23 @@ module shelby_capsule::time_capsule {
         timestamp::now_seconds() >= table::borrow(&store.capsules, capsule_id).unlock_time
     }
 
+    /// Look up a wallet's registered public key.
+    /// Aborts with E_PUBKEY_NOT_FOUND if that address has never registered one.
+    #[view]
+    public fun get_pubkey(registry_addr: address, user: address): vector<u8> acquires PubkeyRegistry {
+        assert!(exists<PubkeyRegistry>(registry_addr), E_STORE_NOT_FOUND);
+        let reg = borrow_global<PubkeyRegistry>(registry_addr);
+        assert!(table::contains(&reg.pubkeys, user), E_PUBKEY_NOT_FOUND);
+        *table::borrow(&reg.pubkeys, user)
+    }
+
+    /// Check whether a wallet has registered a public key yet.
+    #[view]
+    public fun has_pubkey(registry_addr: address, user: address): bool acquires PubkeyRegistry {
+        assert!(exists<PubkeyRegistry>(registry_addr), E_STORE_NOT_FOUND);
+        table::contains(&borrow_global<PubkeyRegistry>(registry_addr).pubkeys, user)
+    }
+
     // ── Test-only helpers ─────────────────────────────────────────────────────
     #[test_only]
     use aptos_framework::account::create_account_for_test;
@@ -229,13 +292,30 @@ module shelby_capsule::time_capsule {
             registry,
         );
 
-        // Before unlock: should abort
-        // (We skip testing this to avoid abort in test)
-
         // Fast-forward past unlock time
         timestamp::fast_forward_seconds(101);
 
         let retrieved = get_time_key(registry, 0);
         assert!(retrieved == time_key, 999);
+    }
+
+    #[test(aptos_framework = @aptos_framework, deployer = @shelby_capsule, user = @0x123)]
+    fun test_register_and_lookup_pubkey(
+        aptos_framework: &signer,
+        deployer: &signer,
+        user: &signer,
+    ) acquires PubkeyRegistry {
+        timestamp::set_time_has_started_for_testing(aptos_framework);
+        create_account_for_test(signer::address_of(deployer));
+        create_account_for_test(signer::address_of(user));
+        init_module(deployer);
+
+        let registry = signer::address_of(deployer);
+        let key = b"32_byte_x25519_pubkey_goes_here!";
+
+        register_pubkey(user, key, registry);
+        let retrieved = get_pubkey(registry, signer::address_of(user));
+        assert!(retrieved == key, 998);
+        assert!(has_pubkey(registry, signer::address_of(user)), 997);
     }
 }

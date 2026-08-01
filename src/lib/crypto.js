@@ -15,7 +15,7 @@
 //   - Only the holder of the recipient's private key can ever reproduce it.
 //   - When present, it's mixed into the key derivation so that even after
 //     time_key becomes public, only the intended recipient can decrypt.
-
+import nacl from 'tweetnacl';
 export function bytesToHex(bytes) {
   return '0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
@@ -107,4 +107,73 @@ export async function deriveRecipientSecret(wallet, capsuleSeed) {
 
   const hash = await crypto.subtle.digest('SHA-256', sigBytes);
   return bytesToBase64(new Uint8Array(hash));
+}
+// ── Async recipient-binding (X25519, via tweetnacl) ─────────────────────
+//
+// Unlike deriveRecipientSecret above (which needs the recipient present
+// live, at seal time), this derives a full asymmetric keypair from the
+// same kind of deterministic wallet signature. The PUBLIC half gets
+// published on-chain once (see register_pubkey in the Move contract) so
+// senders can encrypt to it later without the recipient being online.
+
+const REGISTER_MESSAGE = 'Missive: derive my encryption keypair (v1)';
+
+/** Derive a deterministic X25519 keypair from a wallet's signature. */
+export async function deriveX25519Keypair(wallet) {
+  const signFeature = wallet.features?.['aptos:signMessage'];
+  if (!signFeature) throw new Error('Wallet does not support message signing');
+
+  const result = await signFeature.signMessage({
+    message: REGISTER_MESSAGE,
+    nonce: '0',
+  });
+
+  const sig = result?.args?.signature || result?.signature;
+  const sigBytes = typeof sig === 'string'
+    ? hexToBytes(sig)
+    : (sig?.data ? new Uint8Array(sig.data) : new Uint8Array(sig));
+
+  const seedBuffer = await crypto.subtle.digest('SHA-256', sigBytes);
+  const seed = new Uint8Array(seedBuffer); // 32 bytes — required length for nacl
+
+  return nacl.box.keyPair.fromSecretKey(seed); // { publicKey, secretKey }, both 32 bytes
+}
+
+/**
+ * Seal `plaintextBytes` (already AES-encrypted layer-1 ciphertext, as bytes)
+ * so only the holder of `recipientPublicKey`'s matching private key can
+ * ever open it. Uses a fresh ephemeral keypair — the recipient never needs
+ * to be online for this step.
+ *
+ * @returns a JSON string bundling everything needed to decrypt later:
+ *          the ephemeral public key, nonce, and boxed data.
+ */
+export function boxToRecipient(plaintextBytes, recipientPublicKey) {
+  const ephemeral = nacl.box.keyPair();
+  const nonce = nacl.randomBytes(24);
+  const boxed = nacl.box(plaintextBytes, nonce, recipientPublicKey, ephemeral.secretKey);
+
+  return JSON.stringify({
+    v: 1,
+    ephemeralPublicKey: bytesToBase64(ephemeral.publicKey),
+    nonce: bytesToBase64(nonce),
+    boxed: bytesToBase64(boxed),
+  });
+}
+
+/**
+ * Reverse of boxToRecipient — recipient supplies their own secretKey
+ * (re-derived via deriveX25519Keypair using the same wallet).
+ * @returns the original plaintextBytes (still layer-1 AES ciphertext —
+ *          caller must still decrypt that with the chain-released time_key).
+ */
+export function unboxFromSender(boxedJson, recipientSecretKey) {
+  const parsed = JSON.parse(boxedJson);
+  const ephemeralPublicKey = base64ToBytes(parsed.ephemeralPublicKey);
+  const nonce = base64ToBytes(parsed.nonce);
+  const boxed = base64ToBytes(parsed.boxed);
+
+  const opened = nacl.box.open(boxed, nonce, ephemeralPublicKey, recipientSecretKey);
+  if (!opened) throw new Error('Could not decrypt — wrong recipient key, or data corrupted.');
+  return opened;
 }
