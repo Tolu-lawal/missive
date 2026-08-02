@@ -1,5 +1,5 @@
 import { waitForWallet, connectWallet, signMessage } from './lib/wallet.js';
-import { decryptMessage, deriveRecipientSecret } from './lib/crypto.js';
+import { decryptMessage, deriveX25519Keypair, unboxFromSender } from './lib/crypto.js';
 import { downloadCapsuleFromShelby } from './lib/shelby.js';
 import { getCapsuleInfo, getTimeKey, CONTRACT_ADDRESS } from './lib/contract.js';
 
@@ -57,14 +57,6 @@ function updateCountdown(targetSeconds) {
   return false;
 }
 
-// ── Extract the random capsule seed embedded in the blob name ──
-// blobName format: "capsules/<hex-seed>.bin" — see seal.js
-function seedFromBlobName(blobName) {
-  const m = blobName.match(/^capsules\/([0-9a-f]+)\.bin$/i);
-  if (!m) throw new Error('Unrecognized blob name format: ' + blobName);
-  return m[1];
-}
-
 async function attemptReveal() {
   clearInterval(countdownInterval);
   $('lockedState').classList.remove('active');
@@ -98,22 +90,27 @@ async function attemptReveal() {
 
     // 2. Download the real encrypted blob from ShelbyNet
     const rawBytes = await downloadCapsuleFromShelby({ ownerAddress: info.author, blobName: info.blobName });
-console.log('blob type:', typeof rawBytes, 'constructor:', rawBytes?.constructor?.name, 'value:', rawBytes);
-const ciphertextB64 = rawBytes instanceof Uint8Array 
-  ? new TextDecoder().decode(rawBytes)
-  : typeof rawBytes === 'string' 
-    ? rawBytes 
-    : new TextDecoder().decode(new Uint8Array(Object.values(rawBytes)));
+    const rawString = rawBytes instanceof Uint8Array
+      ? new TextDecoder().decode(rawBytes)
+      : typeof rawBytes === 'string'
+        ? rawBytes
+        : new TextDecoder().decode(new Uint8Array(Object.values(rawBytes)));
 
-    // 3. Recompute the recipient secret if this capsule is recipient-bound
-    let recipientSecret = null;
+    // 3. If recipient-bound, this blob is a layer-2 "box" — unwrap it first
+    //    using the recipient's X25519 private key (re-derived from the same
+    //    deterministic wallet signature used at registration) to recover the
+    //    layer-1 AES ciphertext underneath.
+    let ciphertextB64;
     if (info.recipientBound) {
-      const seed = seedFromBlobName(info.blobName);
-      recipientSecret = await deriveRecipientSecret(connectedWallet, seed);
+      const keypair = await deriveX25519Keypair(connectedWallet);
+      const layer1Bytes = unboxFromSender(rawString, keypair.secretKey);
+      ciphertextB64 = new TextDecoder().decode(layer1Bytes);
+    } else {
+      ciphertextB64 = rawString;
     }
 
-    // 4. Decrypt
-    const plaintext = await decryptMessage(ciphertextB64, timeKeyBytes, recipientSecret);
+    // 4. Decrypt layer 1 with the chain-released time_key.
+    const plaintext = await decryptMessage(ciphertextB64, timeKeyBytes);
     await typewrite($('messageText'), plaintext, 18);
     $('messageFrom').textContent = '— ' + info.author.slice(0, 12) + '...' + info.author.slice(-6);
 
@@ -164,8 +161,8 @@ $('gateBtn').addEventListener('click', async () => {
     connectedWallet = wallet;
 
     // Sign to prove identity (not strictly required by the contract for
-    // public capsules, but it's good practice and required for the
-    // deterministic-secret derivation step on recipient-bound capsules).
+    // public capsules, but good practice — separate from the deterministic
+    // X25519 derivation signature used for recipient-bound capsules).
     try { await signMessage(wallet, 'Opening Shelby Time Capsule #' + capsuleId, Date.now().toString()); } catch (e) { /* optional */ }
 
     $('gateStatus').innerHTML = '<span>✓ Verified: ' + connectedAddress.slice(0, 10) + '...' + connectedAddress.slice(-6) + '</span>';
