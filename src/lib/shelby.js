@@ -48,15 +48,12 @@ function buildRegisterBlobPayload({ blobName, expirationMicros, blobMerkleRoot, 
     function: `${SHELBY_DEPLOYER.toString()}::blob_metadata::register_blob`,
     functionArguments: [
       blobName,
-      null,                        // selectedLocation — no preference
-      null,                        // locationHint — no preference
-      expirationMicros.toString(),
+      expirationMicros,
       Array.from(Hex.fromHexString(blobMerkleRoot).toUint8Array()),
-      numChunksets.toString(),
-      blobSize.toString(),
-      '0',        // payment tier
-      encoding.toString(), // erasure encoding scheme
-      0,          // encryption enum: 0 = Unencrypted (we already AES-encrypt client-side)
+      numChunksets,
+      blobSize,
+      0,        // payment tier
+      encoding, // erasure encoding scheme
     ],
   };
 }
