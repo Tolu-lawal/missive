@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@aptos-labs/ts-sdk": "^7.1.2",
-    "@shelby-protocol/sdk": "^0.2.3",
+    "@shelby-protocol/sdk": "^0.6.0",
     "@wallet-standard/core": "^1.1.1",
     "tweetnacl": "^1.0.3"
   },
