@@ -104,10 +104,11 @@ await new Promise(r => setTimeout(r, 5000));
     rpc: { baseUrl: SHELBYNET_RPC_BASE },
   });
 
-  await rpc.putBlob({
-    account: ownerAddress,
+  await rpc.putBlobChunksets({
+    accountAddress: ownerAddress,
     blobName,
     blobData: data,
+    commitments,
   });
 
   onProgress?.('done');
