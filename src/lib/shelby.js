@@ -30,11 +30,32 @@ import { signAndSubmitTransaction } from './wallet.js';
 
 const SHELBYNET_RPC_BASE = 'https://api.shelbynet.shelby.xyz/shelby';
 const SHELBY_API_KEY = 'AG-LISDV5KTAQZGFQ2ZYUZX2RZHT2M1ONCUX';
+const APTOS_FULLNODE = 'https://api.shelbynet.shelby.xyz/v1';
 
 let _provider = null;
 async function getProvider() {
   if (!_provider) _provider = await createDefaultErasureCodingProvider();
   return _provider;
+}
+
+/**
+ * After a register_blob transaction confirms, read back the emitted
+ * BlobRegisteredEvent to learn the blob's on-chain UID — required by
+ * putBlobChunksets, and only available from this event (not from the
+ * blob name itself, per the SDK's own docs).
+ */
+async function getBlobUidFromTx(txHash) {
+  const eventType = `${SHELBY_DEPLOYER.toStringLong()}::blob_metadata::BlobRegisteredEvent`;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const res = await fetch(`${APTOS_FULLNODE}/transactions/by_hash/${txHash}`);
+    if (res.ok) {
+      const tx = await res.json();
+      const ev = (tx.events || []).find(e => e.type === eventType);
+      if (ev) return ev.data.uid;
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  throw new Error('Could not find BlobRegisteredEvent for transaction ' + txHash);
 }
 
 /**
@@ -92,12 +113,11 @@ export async function uploadCapsuleToShelby({ wallet, ownerAddress, blobName, da
     encoding: cfg.enumIndex,
   });
 
-  const txHash = await signAndSubmitTransaction(wallet, payload.function, payload.functionArguments);
-
-  // Wait for the transaction to be indexed by ShelbyNet before uploading bytes
-await new Promise(r => setTimeout(r, 5000));
+ const txHash = await signAndSubmitTransaction(wallet, payload.function, payload.functionArguments);
 
   onProgress?.('uploading-bytes');
+  const blobUid = await getBlobUidFromTx(txHash);
+
   const rpc = new ShelbyRPCClient({
     network: 'shelbynet',
     apiKey: SHELBY_API_KEY,
@@ -106,6 +126,7 @@ await new Promise(r => setTimeout(r, 5000));
 
   await rpc.putBlobChunksets({
     accountAddress: ownerAddress,
+    uid: blobUid,
     blobName,
     blobData: data,
     commitments,
