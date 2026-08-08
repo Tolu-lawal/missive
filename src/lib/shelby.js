@@ -45,7 +45,7 @@ async function getProvider() {
  * blob name itself, per the SDK's own docs).
  */
 async function getBlobUidFromTx(txHash) {
-  const eventType = `${SHELBY_DEPLOYER.toStringLong()}::blob_metadata::BlobRegisteredEvent`;
+  const eventType = `${SHELBY_DEPLOYER}::blob_metadata::BlobRegisteredEvent`;
   for (let attempt = 0; attempt < 10; attempt++) {
     const res = await fetch(`${APTOS_FULLNODE}/transactions/by_hash/${txHash}`);
     if (res.ok) {
