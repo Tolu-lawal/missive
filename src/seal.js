@@ -233,12 +233,15 @@ $('sealBtn').addEventListener('click', async () => {
       blobName,
       data: dataBytes,
       expirationMicros,
-      onProgress: (phase) => {
-        if (phase === 'generating-commitments') setStep('step1', 'active-step');
-        if (phase === 'registering-onchain') { setStep('step1', 'done'); setStep('step2', 'active-step'); }
-        if (phase === 'uploading-bytes') { setStep('step2', 'done'); setStep('step3', 'active-step'); }
-        if (phase === 'done') setStep('step3', 'done');
-      },
+     onProgress: (phase) => {
+  if (phase === 'generating-commitments') setStep('step1', 'active-step');
+  if (phase === 'registering-onchain') { setStep('step1', 'done'); setStep('step2', 'active-step'); }
+  if (phase === 'uploading-bytes') { setStep('step2', 'done'); setStep('step3', 'active-step'); }
+  // 'finalizing-commit' intentionally has no case here — step3 stays
+  // active through both the byte upload and the commit_object signature,
+  // since to the user it's all one "uploading to ShelbyNet" moment.
+  if (phase === 'done') setStep('step3', 'done');
+},
     });
 
     // Step 4: seal on our time_capsule contract

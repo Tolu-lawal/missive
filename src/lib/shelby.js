@@ -46,6 +46,55 @@ async function getProvider() {
  */
 async function getBlobUidFromTx(txHash) {
   const eventType = `${SHELBY_DEPLOYER}::blob_metadata::BlobRegisteredEvent`;
+
+/** Wait for a submitted transaction to actually confirm on-chain. */
+async function waitForTxSuccess(txHash) {
+  for (let attempt = 0; attempt < 15; attempt++) {
+    const res = await fetch(`${APTOS_FULLNODE}/transactions/by_hash/${txHash}`);
+    if (res.ok) {
+      const tx = await res.json();
+      if (tx.type !== 'pending_transaction') {
+        if (!tx.success) throw new Error(`Transaction failed: ${tx.vm_status}`);
+        return tx;
+      }
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  throw new Error('Timed out waiting for transaction ' + txHash);
+}
+
+/**
+ * Sort storage-provider acks by slot and pack them into the
+ * (ack_bits, signatures) pair commit_object expects — the contract walks
+ * the set bits low-to-high and consumes signatures in that same order.
+ */
+function encodeAcks(storageProviderAcks) {
+  const sorted = [...storageProviderAcks].sort((a, b) => a.slot - b.slot);
+  const ackBits = sorted.reduce((acc, ack) => acc | (1 << ack.slot), 0);
+  const signatures = sorted.map(ack => Array.from(ack.signature));
+  return { ackBits, signatures };
+}
+
+/**
+ * Payload for commit_object — binds the written pending blob under its
+ * object name, finalizing the upload. Without this, the blob stays
+ * "pending" and is not retrievable via getBlob (404).
+ */
+function buildCommitObjectPayload({ uid, blobName, overwrite, storageProviderAcks }) {
+  const { ackBits, signatures } = encodeAcks(storageProviderAcks);
+  return {
+    function: `${SHELBY_DEPLOYER}::blob_metadata::commit_object`,
+    functionArguments: [
+      uid,
+      blobName,
+      overwrite,
+      null, // if_match_etag: Option<vector<u8>> => None
+      ackBits,
+      signatures,
+    ],
+  };
+}
+
   for (let attempt = 0; attempt < 10; attempt++) {
     const res = await fetch(`${APTOS_FULLNODE}/transactions/by_hash/${txHash}`);
     if (res.ok) {
@@ -124,13 +173,23 @@ export async function uploadCapsuleToShelby({ wallet, ownerAddress, blobName, da
     rpc: { baseUrl: SHELBYNET_RPC_BASE },
   });
 
-  await rpc.putBlobChunksets({
+  const uploadResult = await rpc.putBlobChunksets({
     accountAddress: ownerAddress,
     uid: blobUid,
     blobName,
     blobData: data,
     commitments,
   });
+
+  onProgress?.('finalizing-commit');
+  const commitPayload = buildCommitObjectPayload({
+    uid: blobUid,
+    blobName,
+    overwrite: true,
+    storageProviderAcks: uploadResult.spAcks,
+  });
+  const commitTxHash = await signAndSubmitTransaction(wallet, commitPayload.function, commitPayload.functionArguments);
+  await waitForTxSuccess(commitTxHash);
 
   onProgress?.('done');
   return { txHash, blobName, merkleRoot: commitments.blob_merkle_root };
