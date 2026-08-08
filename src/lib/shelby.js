@@ -1,6 +1,6 @@
 // ── ShelbyNet upload ─────────────────────────────────────────────────────
 //
-// Two-step real upload, both genuinely hitting ShelbyNet:
+// Three-step real upload, all genuinely hitting ShelbyNet:
 //
 //  1. ON-CHAIN REGISTRATION (Aptos transaction, signed by the user's wallet)
 //     We build the `register_blob` Move call payload ourselves (the same
@@ -8,12 +8,16 @@
 //     internally) and submit it via the AIP-62 wallet standard. This means
 //     Petra signs it — no private key ever touches our code.
 //
-//  2. RPC BYTE UPLOAD (multipart upload to the Shelby storage nodes)
-//     This step is authenticated by API key only (no wallet signature
-//     required by the protocol) and is handled directly by the SDK's
-//     ShelbyRPCClient.putBlob().
+//  2. RPC BYTE UPLOAD (chunkset upload to the Shelby storage providers)
+//     Authenticated by API key, returns storage-provider acknowledgements
+//     (spAcks) needed for step 3.
 //
-// Together these two steps are what the official `ShelbyClient.upload()`
+//  3. ON-CHAIN COMMIT (Aptos transaction, signed by the user's wallet)
+//     Finalizes the pending blob under its object name using the spAcks
+//     from step 2. Without this, the blob stays "pending" and 404s on
+//     download — this step is what actually makes it retrievable.
+//
+// Together these three steps are what the official `ShelbyClient.upload()`
 // helper does — we're just splitting it because the high-level helper
 // expects a local-key `Account`, while we only have a browser wallet.
 
@@ -46,6 +50,17 @@ async function getProvider() {
  */
 async function getBlobUidFromTx(txHash) {
   const eventType = `${SHELBY_DEPLOYER}::blob_metadata::BlobRegisteredEvent`;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const res = await fetch(`${APTOS_FULLNODE}/transactions/by_hash/${txHash}`);
+    if (res.ok) {
+      const tx = await res.json();
+      const ev = (tx.events || []).find(e => e.type === eventType);
+      if (ev) return ev.data.uid;
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  throw new Error('Could not find BlobRegisteredEvent for transaction ' + txHash);
+}
 
 /** Wait for a submitted transaction to actually confirm on-chain. */
 async function waitForTxSuccess(txHash) {
@@ -95,27 +110,14 @@ function buildCommitObjectPayload({ uid, blobName, overwrite, storageProviderAck
   };
 }
 
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const res = await fetch(`${APTOS_FULLNODE}/transactions/by_hash/${txHash}`);
-    if (res.ok) {
-      const tx = await res.json();
-      const ev = (tx.events || []).find(e => e.type === eventType);
-      if (ev) return ev.data.uid;
-    }
-    await new Promise(r => setTimeout(r, 500));
-  }
-  throw new Error('Could not find BlobRegisteredEvent for transaction ' + txHash);
-}
-
 /**
  * Build the register_blob Move payload — mirrors
  * ShelbyBlobClient.createRegisterBlobPayload() but standalone so we don't
  * need a full local-key Account.
  */
-
 function buildRegisterBlobPayload({ blobName, expirationMicros, blobMerkleRoot, numChunksets, blobSize, encoding }) {
   return {
-    function: `${SHELBY_DEPLOYER.toString()}::blob_metadata::register_blob`,
+    function: `${SHELBY_DEPLOYER}::blob_metadata::register_blob`,
     functionArguments: [
       blobName,
       'shelbynet-1',   // selectedLocation — the region identifier for ShelbyNet
@@ -162,7 +164,7 @@ export async function uploadCapsuleToShelby({ wallet, ownerAddress, blobName, da
     encoding: cfg.enumIndex,
   });
 
- const txHash = await signAndSubmitTransaction(wallet, payload.function, payload.functionArguments);
+  const txHash = await signAndSubmitTransaction(wallet, payload.function, payload.functionArguments);
 
   onProgress?.('uploading-bytes');
   const blobUid = await getBlobUidFromTx(txHash);
